@@ -306,21 +306,21 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
         st.info("選択された条件に該当する工程データがありません。")
 
     # --- ROI分析セクション（最下部へ移動） ---
-    st.header("ROI（費用対効果）分析")
-    with st.expander("総短縮時間の試算"):
-        total_requests = len(df_seisakubutsu_filtered['トークン'].unique())
-        time_saved_per_request = 5  # 1件あたりの短縮時間（分）
-        total_minutes_saved = total_requests * time_saved_per_request
-        hours_saved = total_minutes_saved // 60
-        minutes_saved = total_minutes_saved % 60
+    # st.header("ROI（費用対効果）分析")
+    # with st.expander("総短縮時間の試算"):
+    #     total_requests = len(df_seisakubutsu_filtered['トークン'].unique())
+    #     time_saved_per_request = 5  # 1件あたりの短縮時間（分）
+    #     total_minutes_saved = total_requests * time_saved_per_request
+    #     hours_saved = total_minutes_saved // 60
+    #     minutes_saved = total_minutes_saved % 60
 
-        st.metric(
-            label=f"期間内の総チェック出し案件数",
-            value=f"{total_requests} 件",
-            delta=f"約 {hours_saved} 時間 {minutes_saved} 分の短縮効果が見込まれます",
-            delta_color="off"
-        )
-        st.info(f"この試算は、1案件あたり {time_saved_per_request} 分の時間が短縮されると仮定した場合のものです。")
+    #     st.metric(
+    #         label=f"期間内の総チェック出し案件数",
+    #         value=f"{total_requests} 件",
+    #         delta=f"約 {hours_saved} 時間 {minutes_saved} 分の短縮効果が見込まれます",
+    #         delta_color="off"
+    #     )
+    #     st.info(f"この試算は、1案件あたり {time_saved_per_request} 分の時間が短縮されると仮定した場合のものです。")
 
 else:
     st.info("サイドバーから分析対象のCSVファイルを2つアップロードすると、分析が始まります。")
