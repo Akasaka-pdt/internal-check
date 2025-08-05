@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -164,10 +163,115 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
         st.warning("選択された条件に該当するデータはありません。フィルター条件を変更してください。")
         st.stop()
 
-    st.success(f"データ読み込み完了。現在 {len(df_seisakubutsu_filtered.drop_duplicates(subset=['トークン']))} 件の制作データを分析中です。")
+    st.success(f"データ読み込み完了。現在 {df_seisakubutsu_filtered['制作物名'].nunique()} 件の制作物データを分析中です。")
 
     # --- タブに表示する工程を決定 ---
     processes_for_tabs = [p for p in original_process_order if p in df_filtered['工程'].unique()]
+
+    # --- 全体サマリー ---
+    st.text("")
+    st.header("📊 全体サマリー")
+    st.markdown("フィルターで絞り込んだデータ全体の概要（学年別・合計）と、発刊月ごとの推移を確認できます。")
+
+    # --- 学年別の集計 ---
+    if not relevant_grades.empty:
+        df_filtered_with_grade_summary = pd.merge(df_filtered, relevant_grades[['トークン', '学年']].drop_duplicates(), on='トークン', how='left')
+        df_seisakubutsu_filtered_with_grade_summary = pd.merge(df_seisakubutsu_filtered, relevant_grades[['トークン', '学年']].drop_duplicates(), on='トークン', how='left')
+
+        # --- 学年ごとのサマリー計算 ---
+        summary_items = df_seisakubutsu_filtered_with_grade_summary.groupby('学年', observed=True)['制作物名'].nunique().rename('総制作物件数')
+        summary_processes = df_seisakubutsu_filtered_with_grade_summary.groupby('学年', observed=True).size().rename('総工程数')
+        completed_checks = df_filtered_with_grade_summary[df_filtered_with_grade_summary['チェック済み'] == True].groupby('学年', observed=True).size().rename('completed')
+        on_time_checks = df_filtered_with_grade_summary[(df_filtered_with_grade_summary['チェック済み'] == True) & (df_filtered_with_grade_summary['修正日_header'] <= df_filtered_with_grade_summary['締め切り日'])].groupby('学年', observed=True).size().rename('on_time')
+        on_time_summary = pd.concat([completed_checks, on_time_checks], axis=1).fillna(0)
+        on_time_summary['期限内完了率(%)'] = (on_time_summary['on_time'] / on_time_summary['completed'] * 100).where(on_time_summary['completed'] > 0, 0)
+        avg_checkers = df_seisakubutsu_filtered_with_grade_summary.drop_duplicates(subset=['学年', 'トークン']).groupby('学年', observed=True)['チェック者数'].mean().rename('平均チェック者数(人)')
+        
+        summary_by_grade_df = pd.concat([summary_items, summary_processes, on_time_summary['期限内完了率(%)'], avg_checkers], axis=1).reset_index()
+        summary_by_grade_df.fillna(0, inplace=True)
+
+        # --- 全体合計のサマリー計算 ---
+        total_items = df_seisakubutsu_filtered['制作物名'].nunique()
+        total_processes = len(df_seisakubutsu_filtered)
+        total_completed = df_filtered['チェック済み'].sum()
+        total_on_time = df_filtered[(df_filtered['チェック済み'] == True) & (df_filtered['修正日_header'] <= df_filtered['締め切り日'])].shape[0]
+        total_on_time_rate = (total_on_time / total_completed * 100) if total_completed > 0 else 0
+        total_avg_checkers = df_seisakubutsu_filtered.drop_duplicates(subset=['トークン'])['チェック者数'].mean()
+
+        total_summary_df = pd.DataFrame([{
+            '学年': '合計',
+            '総制作物件数': total_items,
+            '総工程数': total_processes,
+            '期限内完了率(%)': total_on_time_rate,
+            '平均チェック者数(人)': total_avg_checkers
+        }])
+        
+        # --- 学年別と合計を結合 ---
+        final_summary_df = pd.concat([summary_by_grade_df, total_summary_df], ignore_index=True)
+        final_summary_df.fillna(0, inplace=True)
+
+        # 整形
+        int_cols = ['総制作物件数', '総工程数']
+        for col in int_cols:
+            final_summary_df[col] = final_summary_df[col].astype(int)
+        
+        column_order = ['学年', '総制作物件数', '総工程数', '期限内完了率(%)', '平均チェック者数(人)']
+        final_summary_df = final_summary_df.round(1)
+        
+        # 表示
+        st.subheader("学年別サマリー")
+        st.dataframe(final_summary_df[column_order], use_container_width=True)
+
+    else:
+        st.info("学年データがないため、学年別サマリーは表示できません。")
+
+    st.markdown("---")
+
+    # --- 発刊月ごとの推移 ---
+    st.subheader("発刊月ごとの推移")
+    
+    if not relevant_grades.empty:
+        # 学年ごとの月次集計
+        monthly_by_grade = df_seisakubutsu_filtered_with_grade_summary.groupby(['発刊月', '学年'], observed=True).agg(
+            制作物件数=('制作物名', 'nunique'),
+            総工程数=('トークン', 'size')
+        ).reset_index()
+
+        # 全体合計の月次集計
+        monthly_total = df_seisakubutsu_filtered.groupby('発刊月', observed=True).agg(
+            制作物件数=('制作物名', 'nunique'),
+            総工程数=('トークン', 'size')
+        ).reset_index()
+        monthly_total['学年'] = '合計'
+        
+        # 結合
+        monthly_summary = pd.concat([monthly_by_grade, monthly_total])
+        
+        # 発刊月の順序を適用し、「その他」を除外
+        monthly_summary['発刊月'] = pd.Categorical(monthly_summary['発刊月'], categories=month_order, ordered=True)
+        monthly_summary_for_graph = monthly_summary[monthly_summary['発刊月'] != 'その他'].copy()
+        monthly_summary_for_graph.sort_values('発刊月', inplace=True)
+
+        # グラフ描画用に月の順序を再定義（「その他」を除外）
+        month_order_for_graph = [m for m in month_order if m != 'その他']
+
+        if not monthly_summary_for_graph.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig_monthly_items = px.line(monthly_summary_for_graph, x='発刊月', y='制作物件数', color='学年', title='発刊月ごとの制作物件数', markers=True, color_discrete_sequence=px.colors.qualitative.T10)
+                fig_monthly_items.update_layout(xaxis_title=None, legend_title_text='学年')
+                fig_monthly_items.update_xaxes(categoryorder='array', categoryarray=month_order_for_graph)
+                st.plotly_chart(fig_monthly_items, use_container_width=True)
+            with col2:
+                fig_monthly_processes = px.line(monthly_summary_for_graph, x='発刊月', y='総工程数', color='学年', title='発刊月ごとの総工程数', markers=True, color_discrete_sequence=px.colors.qualitative.T10)
+                fig_monthly_processes.update_layout(xaxis_title=None, legend_title_text='学年')
+                fig_monthly_processes.update_xaxes(categoryorder='array', categoryarray=month_order_for_graph)
+                st.plotly_chart(fig_monthly_processes, use_container_width=True)
+        else:
+            st.info("発刊月ごとの集計データがありません。")
+    else:
+        st.info("学年データがないため、発刊月ごとの推移は表示できません。")
+
 
     # --- 工程別 統合分析ダッシュボード ---
     st.text("")
