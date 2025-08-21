@@ -80,7 +80,7 @@ def load_data(seisakubutsu_file, header_file):
         checkers_count_df = header_df.groupby('トークン')['担当者メールアドレス'].nunique().reset_index()
         checkers_count_df.rename(columns={'担当者メールアドレス': 'チェック者数'}, inplace=True)
         # PIIは速やかに削除
-        header_df = header_df.drop(columns=['担当者メールアドレス'])
+        # header_df = header_df.drop(columns=['担当者メールアドレス'])
     else:
         checkers_count_df = pd.DataFrame(columns=['トークン', 'チェック者数'])
 
