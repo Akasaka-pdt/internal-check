@@ -5,6 +5,7 @@ import plotly.express as px
 import io
 import gc
 from datetime import datetime
+import re
 
 # =========================
 # セキュリティ/堅牢化ポイント
@@ -30,6 +31,19 @@ st.set_page_config(page_title="社内チェック業務 BPR分析ツール", lay
 st.title("📊 社内チェック業務 BPR分析ツール")
 
 # --- ユーティリティ ---
+
+# 文字列でも 'true','1','yes','y','○','✓' などを True とみなすための集合
+TRUE_SET = {'true', '1', 'yes', 'y', 't', 'on', '○', '◯', '✓'}
+
+def to_bool_like(v):
+    """True/False/文字列/数値を幅広くbool解釈する（Noneや空白はFalse）"""
+    if isinstance(v, bool):
+        return v
+    if pd.isna(v):
+        return False
+    s = str(v).strip().lower()
+    return s in TRUE_SET
+
 def num_fillna_inplace(df: pd.DataFrame, val=0):
     """DataFrameの数値列だけNAを埋める"""
     if df is None or df.empty:
@@ -39,13 +53,14 @@ def num_fillna_inplace(df: pd.DataFrame, val=0):
         df[num_cols] = df[num_cols].fillna(val)
 
 def safe_bool_series(df: pd.DataFrame, col: str) -> pd.Series:
-    """df[col]==True を安全に返す。列が無い場合は全FalseのSeriesを返す"""
-    if df is None or df.empty:
-        return pd.Series([], dtype=bool)
-    if col in df.columns:
-        return df[col] == True
-    # 全FalseのブールSeries（インデックス揃え）
-    return pd.Series(False, index=df.index)
+    """
+    df[col] を安全にブール評価したSeriesを返す。
+    - 列が無い場合は全False
+    - 値が 'True' / '1' / 'yes' / '○' / '✓' などでも True と解釈
+    """
+    if df is None or df.empty or col not in df.columns:
+        return pd.Series(False, index=(df.index if isinstance(df, pd.DataFrame) else None), dtype=bool)
+    return df[col].map(to_bool_like)
 
 def has_cols(df: pd.DataFrame, cols) -> bool:
     """必要列がすべて存在するか"""
@@ -61,11 +76,21 @@ uploaded_header_file = st.sidebar.file_uploader("ヘッダー一覧 CSV", type="
 def load_data(seisakubutsu_file, header_file):
     """アップロードCSVを読み込み、結合・前処理を行う（PIIは早期除去）"""
     try:
-        seisakubutsu_df = pd.read_csv(seisakubutsu_file)
-        header_df = pd.read_csv(header_file)
+        # 文字コードはUTF-8系を優先
+        seisakubutsu_df = pd.read_csv(seisakubutsu_file, encoding='utf-8-sig')
     except Exception:
-        st.error("エラー: ファイルの読み込みに失敗しました。CSV形式や文字コードをご確認ください。")
-        return None, None
+        try:
+            seisakubutsu_df = pd.read_csv(seisakubutsu_file, encoding='utf-8')
+        except Exception:
+            seisakubutsu_df = pd.read_csv(seisakubutsu_file)
+
+    try:
+        header_df = pd.read_csv(header_file, encoding='utf-8-sig')
+    except Exception:
+        try:
+            header_df = pd.read_csv(header_file, encoding='utf-8')
+        except Exception:
+            header_df = pd.read_csv(header_file)
 
     # 日付正規化
     for col in ['作成日', '修正日', '締め切り日']:
@@ -79,7 +104,7 @@ def load_data(seisakubutsu_file, header_file):
     if '担当者メールアドレス' in header_df.columns:
         checkers_count_df = header_df.groupby('トークン')['担当者メールアドレス'].nunique().reset_index()
         checkers_count_df.rename(columns={'担当者メールアドレス': 'チェック者数'}, inplace=True)
-        # PIIは速やかに削除
+        # PIIは速やかに削除する場合は以下を有効化
         # header_df = header_df.drop(columns=['担当者メールアドレス'])
     else:
         checkers_count_df = pd.DataFrame(columns=['トークン', 'チェック者数'])
@@ -178,18 +203,23 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
         df_filtered_by_month = df_filtered_by_month[df_filtered_by_month['発刊月'] == selected_month]
         df_seisakubutsu_filtered_by_month = df_seisakubutsu_filtered_by_month[df_seisakubutsu_filtered_by_month['発刊月'] == selected_month]
 
-    # 学年フィルター
+    # 学年フィルター（★ここで「入学準備」を拾うように修正）
     st.sidebar.subheader("学年フィルター")
-    grade_cols = [c for c in df_seisakubutsu_all.columns
-              if ('年生' in c or '学年その他' in c or c == '入学準備')]
+    grade_cols = [c for c in df_seisakubutsu_all.columns if ('年生' in c or '学年その他' in c or c == '入学準備')]
+
     if grade_cols:
+        # melt → '対象' をブール解釈（'True','1','○' などもOK）
         melted_grades = df_seisakubutsu_filtered_by_month.melt(
             id_vars=['トークン'], value_vars=grade_cols, var_name='学年', value_name='対象'
         )
-        relevant_grades = melted_grades[melted_grades['対象'] == True]
+        if not melted_grades.empty:
+            melted_grades['対象_bool'] = melted_grades['対象'].map(to_bool_like)
+        else:
+            melted_grades['対象_bool'] = pd.Series(dtype=bool)
+        relevant_grades = melted_grades[melted_grades['対象_bool'] == True]
         available_grades = relevant_grades['学年'].unique().tolist()
     else:
-        melted_grades = pd.DataFrame(columns=['トークン', '学年', '対象'])
+        melted_grades = pd.DataFrame(columns=['トークン', '学年', '対象', '対象_bool'])
         relevant_grades = pd.DataFrame(columns=['トークン', '学年'])
         available_grades = []
 
@@ -259,12 +289,11 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
         # 期限内完了率の計算（必要列が揃っているかチェック）
         need_cols = {'チェック済み', '修正日_header', '締め切り日'}
         if has_cols(df_filtered_with_grade_summary, need_cols):
-            completed = df_filtered_with_grade_summary[safe_bool_series(df_filtered_with_grade_summary, 'チェック済み')] \
-                .groupby('学年', observed=True).size().rename('completed')
-            ontime = df_filtered_with_grade_summary[
-                safe_bool_series(df_filtered_with_grade_summary, 'チェック済み') &
-                (df_filtered_with_grade_summary['修正日_header'] <= df_filtered_with_grade_summary['締め切り日'])
-            ].groupby('学年', observed=True).size().rename('on_time')
+            completed = safe_bool_series(df_filtered_with_grade_summary, 'チェック済み') \
+                .groupby(df_filtered_with_grade_summary['学年'], observed=True).sum().rename('completed')
+            ontime_mask = safe_bool_series(df_filtered_with_grade_summary, 'チェック済み') & \
+                          (df_filtered_with_grade_summary['修正日_header'] <= df_filtered_with_grade_summary['締め切り日'])
+            ontime = ontime_mask.groupby(df_filtered_with_grade_summary['学年'], observed=True).sum().rename('on_time')
             on_time_summary = pd.concat([completed, ontime], axis=1)
             num_fillna_inplace(on_time_summary, 0)
             on_time_summary['期限内完了率(%)'] = (
@@ -387,12 +416,14 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
 
             # 期限内完了率（列存在チェック）
             if has_cols(df_filtered_with_grade, {'チェック済み', '修正日_header', '締め切り日'}):
-                completed_g = df_filtered_with_grade[safe_bool_series(df_filtered_with_grade, 'チェック済み')] \
-                    .groupby(['学年', '工程'], observed=True).size().rename('completed_count')
-                ontime_g = df_filtered_with_grade[
-                    safe_bool_series(df_filtered_with_grade, 'チェック済み') &
-                    (df_filtered_with_grade['修正日_header'] <= df_filtered_with_grade['締め切り日'])
-                ].groupby(['学年', '工程'], observed=True).size().rename('on_time_count')
+                completed_g = safe_bool_series(df_filtered_with_grade, 'チェック済み') \
+                    .groupby([df_filtered_with_grade['学年'], df_filtered_with_grade['工程']], observed=True).sum() \
+                    .rename('completed_count')
+
+                ontime_mask = safe_bool_series(df_filtered_with_grade, 'チェック済み') & \
+                              (df_filtered_with_grade['修正日_header'] <= df_filtered_with_grade['締め切り日'])
+                ontime_g = ontime_mask.groupby([df_filtered_with_grade['学年'], df_filtered_with_grade['工程']], observed=True) \
+                    .sum().rename('on_time_count')
 
                 on_time_rate_df = pd.concat([completed_g, ontime_g], axis=1).reset_index()
                 # 数値列のみ埋める
@@ -468,16 +499,22 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
                 if grade_cols and not df_proc_sei.empty:
                     melted_cur = df_proc_sei.melt(id_vars=['トークン'], value_vars=grade_cols,
                                                   var_name='学年', value_name='対象')
-                    rel_cur = melted_cur[melted_cur['対象'] == True]
+                    if not melted_cur.empty:
+                        melted_cur['対象_bool'] = melted_cur['対象'].map(to_bool_like)
+                        rel_cur = melted_cur[melted_cur['対象_bool'] == True]
+                    else:
+                        rel_cur = pd.DataFrame(columns=['トークン', '学年'])
+
                     df_next = pd.merge(df_proc, rel_cur[['トークン', '学年']].drop_duplicates(),
                                        on='トークン', how='left') if not rel_cur.empty else pd.DataFrame(columns=['学年','次回チェック出し'])
 
                     scaffold_grades_df = pd.DataFrame({'学年': selected_grades})
                     if not df_next.empty and '学年' in df_next.columns and '次回チェック出し' in df_next.columns:
-                        grouped = df_next.groupby(['学年'], observed=True)['次回チェック出し']
-                        count = grouped.sum().astype(int).rename('次回チェック出し要_人数')
-                        total_in_group = grouped.size()
-                        ratio = (count / total_in_group * 100).round(1).rename('次回チェック出し要_割合(%)')
+                        # 次回チェック出しも真偽値解釈してから集計
+                        next_mask = safe_bool_series(df_next, '次回チェック出し')
+                        count = next_mask.groupby(df_next['学年'], observed=True).sum().astype(int).rename('次回チェック出し要_人数')
+                        total_in_group = df_next.groupby('学年', observed=True).size()
+                        ratio = ((count / total_in_group) * 100).round(1).rename('次回チェック出し要_割合(%)')
                         result_df = pd.concat([count, ratio], axis=1).reset_index()
                     else:
                         result_df = pd.DataFrame(columns=['学年', '次回チェック出し要_人数', '次回チェック出し要_割合(%)'])
