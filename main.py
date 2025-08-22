@@ -180,7 +180,8 @@ if uploaded_seisakubutsu_file is not None and uploaded_header_file is not None:
 
     # 学年フィルター
     st.sidebar.subheader("学年フィルター")
-    grade_cols = [c for c in df_seisakubutsu_all.columns if ('年生' in c or '学年その他' in c)]
+    grade_cols = [c for c in df_seisakubutsu_all.columns
+              if ('年生' in c or '学年その他' in c or c == '入学準備')]
     if grade_cols:
         melted_grades = df_seisakubutsu_filtered_by_month.melt(
             id_vars=['トークン'], value_vars=grade_cols, var_name='学年', value_name='対象'
